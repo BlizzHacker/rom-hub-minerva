@@ -63,7 +63,11 @@ def _normalise_info_hash(value: str) -> str | None:
 
 class Torrent(TorrentProvider):
     def resolve(self, result: SearchResult) -> TorrentSource:
-        raw = (result.source_id or "").strip()
+        # source_id identifies MiNERVA's file row so candidates sharing one
+        # collection torrent remain distinct. The magnet is carried in extra
+        # and still names the whole collection.
+        raw = str((result.extra or {}).get("torrent_magnet")
+                  or result.source_id or "").strip()
         if urlsplit(raw).scheme.lower() != "magnet":
             raise TorrentRefused(
                 "that search result carries no magnet; MiNERVA results always "

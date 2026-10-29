@@ -85,18 +85,36 @@ def test_search_lowercases_the_query_and_calls_the_api():
     assert http.calls[0][1]["query"] == "chrono trigger"
     assert len(out) == 1
     assert out[0].title == "Chrono Trigger (1995)(Square)(US).zip"
-    assert out[0].source_id == ROW["magnet"]
+    assert out[0].source_id.startswith("minerva-row:823208:")
+    assert out[0].extra["id"] == "823208"
+    assert out[0].extra["so_id"] == "29812"
+    assert out[0].extra["torrent_magnet"] == ROW["magnet"]
     assert out[0].size_bytes is None, "unknown size must be None, never 0"
     assert out[0].url.endswith("/rom?id=823208")
     assert out[0].extra["path"] == ROW["full_path"]
 
 
-def test_rows_sharing_a_magnet_collapse_to_one_result():
-    s, _ = _search({}, lambda u, p: _Resp(200, [ROW, ALT, OTHER]))
+def test_matching_file_rows_sharing_a_magnet_stay_distinct():
+    s, http = _search({}, lambda u, p: _Resp(200, [ROW, ALT, ROW, OTHER]))
     out = s.search("chrono trigger", None, 100)
-    titles = [r.title for r in out]
-    assert len(out) == 2, "the [a8] alternate shares the magnet and must fold"
-    assert "Super Mario 64 (USA).z64" in titles
+    chrono = [r for r in out if "Chrono Trigger" in r.title]
+    assert len(chrono) == 2, "different matching file rows must not collapse by torrent"
+    assert {r.extra["id"] for r in chrono} == {"823208", "823244"}
+    assert {r.extra["path"] for r in chrono} == {
+        ROW["full_path"], ALT["full_path"]
+    }
+    assert all(r.extra["torrent_magnet"] == ROW["magnet"] for r in chrono)
+    assert chrono[0].source_id != chrono[1].source_id
+    assert all(url == "https://minerva-archive.org/v1/api/rom/search"
+               for url, _ in http.calls)
+    assert all("/rom?id=" not in url and "/browse/" not in url
+               for url, _ in http.calls)
+    assert any(r.title == "Super Mario 64 (USA).z64" for r in out)
+
+
+def test_zero_limit_returns_no_rows():
+    s, _ = _search({}, lambda u, p: _Resp(200, [ROW]))
+    assert s.search("chrono", None, 0) == []
 
 
 def test_empty_filters_are_not_sent():
@@ -142,6 +160,8 @@ def test_pagination_advances_offset_on_a_full_page():
     s, http = _search({"max_pages": 3}, answers)
     out = s.search("anything", None, 500)
     assert [c[1]["offset"] for c in http.calls] == [0, 100]
+    assert all(c[0] == "https://minerva-archive.org/v1/api/rom/search"
+               for c in http.calls)
     assert len(out) == 105
 
 
@@ -187,6 +207,18 @@ def test_resolve_adds_trackers_and_keeps_the_info_hash():
     assert src.info_hash == "c5c78ab0432dcc14fec568ba5daad2d9cc98f4dc"
     assert src.source.count("tr=") == 12
     assert "xt=urn:btih:c5c78ab0" in src.source
+
+
+def test_resolve_uses_the_collection_magnet_for_a_file_row_source_id():
+    t = Torrent(_Ctx({}, None))
+    result = SearchResult(
+        source_id="minerva-row:823208:abc123",
+        title="Chrono Trigger.zip",
+        extra={"torrent_magnet": ROW["magnet"], "path": ROW["full_path"]},
+    )
+    src = t.resolve(result)
+    assert src.info_hash == "c5c78ab0432dcc14fec568ba5daad2d9cc98f4dc"
+    assert src.kind == "magnet"
 
 
 def test_resolve_refuses_a_non_magnet():

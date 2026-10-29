@@ -10,18 +10,19 @@ needs no key:
 Two properties of this source shape the provider:
 
 **A magnet is per collection group, not per game.** One torrent covers a
-whole dump ("TOSEC - Nintendo" holds thousands of zips). So the magnet is
-carried in `source_id` -- the `torrent` capability resolves it to a
-TorrentSource for handoff to the operator's client -- and rows sharing a
-magnet collapse to one result, else a hundred `[a8]`/`[a9]` alternates of
-one dump bury every other source.
+whole dump ("TOSEC - Nintendo" holds thousands of zips). Search therefore
+keeps each matching API file row as its own result, with its row ID and exact
+archive path visible. The result's source ID identifies that file row; its
+extra field torrent_magnet carries the collection magnet for the torrent
+capability. Picking a row still hands off the whole collection torrent. It
+does not select or download only that file.
 
 **The API publishes no size and no seeder count.** `size_bytes` is left
 None (unknown) rather than 0-as-tiny; the host's scoring treats an unknown
 size as "no evidence either way", not "too small to be real".
 """
 
-from urllib.parse import urlparse
+import hashlib
 
 from rom_hub_sdk import SearchProvider, SearchResult
 
@@ -44,11 +45,10 @@ def _title_of(full_path: str) -> str:
 
 
 def _info_hash(magnet: str) -> str:
-    """The btih out of a magnet, for a stable source_id suffix.
+    """Return the btih for display as the collection identity.
 
-    Two rows of one dump share a magnet; the hash is the torrent's identity,
-    so it is what collapses them. Returns "" when the magnet names none, and
-    the caller then falls back to the row id rather than dropping a result.
+    Multiple file rows can share a torrent hash. This helper does not define
+    search-result identity and must never be used to collapse those rows.
     """
     if not magnet.startswith("magnet:"):
         return ""
@@ -106,40 +106,58 @@ class Search(SearchProvider):
         return self._to_results(rows, limit)
 
     def _to_results(self, rows: list[dict], limit: int) -> list[SearchResult]:
+        if limit <= 0:
+            return []
+
         out: list[SearchResult] = []
-        seen: set[str] = set()
+        seen_rows: set[tuple[str, str, str, str]] = set()
         for row in rows:
             magnet = str(row.get("magnet") or "")
             full_path = str(row.get("full_path") or "")
             if not magnet.startswith("magnet:") or not full_path:
                 continue
-            # Collapse one dump's many alternates to a single result, keyed on
-            # the torrent identity (its info-hash) with the row id as fallback.
-            key = _info_hash(magnet) or f"id:{row.get('id')}"
-            if key in seen:
+
+            rom_id = row.get("id")
+            so_id = row.get("so_id")
+            # MiNERVA's id is the source row identifier. Include the path too
+            # so revised rows with a reused id remain distinct.
+            row_key = (
+                str(rom_id or ""),
+                str(so_id or ""),
+                full_path,
+                magnet,
+            )
+            if row_key in seen_rows:
                 continue
-            seen.add(key)
+            seen_rows.add(row_key)
+
             title = _title_of(full_path)
             if not title:
                 continue
-            rom_id = row.get("id")
+            hash_suffix = hashlib.sha256(full_path.encode("utf-8")).hexdigest()[:12]
+            row_identity = str(rom_id or so_id or hash_suffix)
+            # source_id identifies a file row; the collection magnet is
+            # carried separately for Torrent.resolve().
+            torrent_suffix = hashlib.sha256(magnet.encode("utf-8")).hexdigest()[:12]
+            source_id = f"minerva-row:{row_identity}:{hash_suffix}:{torrent_suffix}"
             out.append(SearchResult(
-                source_id=magnet,
+                source_id=source_id,
                 title=title,
                 # MiNERVA names no RomM platform in search results; the path's
                 # vendor segment is not a reliable slug. Left None so the host
                 # matches on title, exactly as it does for other sources.
                 platform=None,
-                size_bytes=None,          # not published -- unknown, not zero
+                size_bytes=None,          # not published -- unknown, never 0
                 url=f"{DETAIL}{rom_id}" if rom_id is not None else None,
                 extra={
+                    "id": str(rom_id or ""),
                     "group": str(row.get("group") or ""),
                     "region": str(row.get("region") or ""),
                     "console": str(row.get("console") or ""),
-                    "so_id": str(row.get("so_id") or ""),
-                    # The whole path, so an operator can see which dump a
-                    # collection torrent covers before grabbing gigabytes.
+                    "so_id": str(so_id or ""),
                     "path": full_path,
+                    "torrent_hash": _info_hash(magnet),
+                    "torrent_magnet": magnet,
                 },
             ))
             if len(out) >= limit:

@@ -8,7 +8,7 @@ This is a *plugin*: a sandboxed subprocess that declares its capabilities and it
 
 | Capability | What it does |
 |---|---|
-| `search` | Queries `GET /v1/api/rom/search` with MiNERVA's own filter vocabulary (`group`, `console`, `region`, `tokenised`) and 100-row offset pagination. One result per collection torrent: rows sharing a magnet (`[a8]`/`[a9]` alternates of one dump) collapse, so one giant torrent doesn't bury every other source. |
+| `search` | Queries only `GET /v1/api/rom/search` with MiNERVA's filters (`group`, `console`, `region`, `tokenised`) and 100-row offset pagination. Each matching API file row stays distinct, even when several rows share a collection magnet. Results include the exact archive path, row `id` and `so_id`, plus the collection torrent hash. |
 | `torrent` | MiNERVA's magnets arrive bare (no trackers — DHT-only). `resolve()` keeps the info-hash, appends twelve well-known public trackers (every host declared in the manifest, because the Hub gates each `tr=` against that list), and returns a `TorrentSource` the host validates and hands to your torrent client. |
 
 No `importer`: MiNERVA distributes by torrent only, and the Hub is deliberately not a torrent client — the host hands the magnet off to yours (qBittorrent, Transmission, Deluge).
@@ -33,10 +33,12 @@ In ROMarr: **Settings → Hub → Plugins** shows it like any other; enabled plu
 
 ## Things worth knowing
 
-- **A torrent is a whole dump group, not one game.** "TOSEC – Nintendo" is one torrent holding thousands of zips. The search result names the exact file (`extra.path`), but grabbing it grabs the collection. This is MiNERVA's distribution model, not a plugin limitation.
-- **The API is slow** (20–25s per query, measured live). Hosts should allow ≥60s for plugin HTTP.
-- **No sizes, no seeder counts** in search results. `size_bytes` is `None` — unknown, never fabricated.
-- The API publishes no per-file download; the magnet is the only route.
+- The result names a file; the magnet names a collection. A result shows the exact path, API row id and so_id. Several matching rows can share one magnet and remain separate results.
+- Picking a row does not select only that file inside the torrent. The selected result hands off the collection magnet; ROM Hub does not currently pass MiNERVA's file index to the torrent client. The client may download the whole collection unless you choose files there.
+- The plugin requests only /v1/api/rom/search. MiNERVA's robots.txt disallows /api/, /browse/ and /rom/; the API route starts with /v1/api/ and is outside the /api/ prefix. The result's /rom?id= URL is an external link for a person and is never fetched by the plugin.
+- The API is slow (20-25s per query, measured live). Hosts should allow at least 60s for plugin HTTP.
+- No sizes or seeder counts are published. size_bytes is None (unknown), never fabricated.
+- The API publishes no per-file download; the collection magnet is the only route.
 
 ## Tests
 
